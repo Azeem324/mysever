@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My Server</title>
+<style>
+:root{--bg:#eef1f4;--panel:#fff;--ink:#1d2733;--mute:#64707d;--line:#d5dbe1;--accent:#1f5f8b;--accent-ink:#fff;--danger:#b3261e;--hover:#f3f6f9}
+@media(prefers-color-scheme:dark){:root{--bg:#14191f;--panel:#1c232b;--ink:#e6ebf0;--mute:#93a0ad;--line:#2d3742;--accent:#5aa9dc;--accent-ink:#0b1722;--danger:#f2877f;--hover:#232c36}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 "Segoe UI",system-ui,sans-serif}
+button,input{font:inherit;color:inherit}
+button{cursor:pointer;border:1px solid var(--line);background:var(--panel);padding:7px 14px;border-radius:6px}
+button:hover{background:var(--hover)}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+button.danger{color:var(--danger)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+input[type=text],input[type=password]{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:6px;background:var(--panel)}
+#login{max-width:340px;margin:18vh auto;padding:28px;background:var(--panel);border:1px solid var(--line);border-radius:10px}
+#login h1{margin:0 0 4px;font-size:22px}
+#login p{margin:0 0 18px;color:var(--mute)}
+#login button{width:100%;margin-top:12px}
+.err{color:var(--danger);min-height:22px;margin-top:8px}
+#app{max-width:980px;margin:0 auto;padding:20px 16px 60px}
+header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+header h1{font-size:20px;margin:0}
+.bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+#crumbs{color:var(--mute);margin-bottom:10px;word-break:break-all}
+#crumbs a{color:var(--accent);cursor:pointer;text-decoration:none}
+#crumbs a:hover{text-decoration:underline}
+#drop{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+#drop.over{outline:2px dashed var(--accent);outline-offset:-6px}
+.row{display:grid;grid-template-columns:1fr 90px 150px auto;gap:10px;align-items:center;padding:9px 14px;border-bottom:1px solid var(--line)}
+.row:last-child{border-bottom:0}
+.row.head{color:var(--mute);font-size:13px;background:var(--hover)}
+.name{cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.name:hover{color:var(--accent)}
+.acts{display:flex;gap:4px}
+.acts button{padding:3px 9px;font-size:13px}
+.empty{padding:44px 16px;text-align:center;color:var(--mute)}
+#status{margin-top:10px;color:var(--mute);font-size:13px}
+progress{width:100%;height:6px;margin-top:8px}
+@media(max-width:640px){.row{grid-template-columns:1fr auto}.row .size,.row .date{display:none}}
+</style>
+</head>
+<body>
+<div id="login" hidden>
+  <h1>My Server</h1>
+  <p>Sign in to see your files.</p>
+  <input type="password" id="pw" placeholder="Password" autocomplete="current-password" aria-label="Password">
+  <button class="primary" id="loginBtn">Sign in</button>
+  <div class="err" id="loginErr"></div>
+</div>
+
+<div id="app" hidden>
+  <header><h1>My Server</h1><button id="logout">Sign out</button></header>
+  <div class="bar">
+    <button class="primary" id="uploadBtn">Upload files</button>
+    <button id="mkdirBtn">New folder</button>
+    <input type="file" id="fileInput" multiple hidden>
+  </div>
+  <div id="crumbs"></div>
+  <div id="drop"></div>
+  <progress id="prog" max="100" value="0" hidden></progress>
+  <div id="status"></div>
+</div>
+
+<script>
+let cwd = '';
+const $ = id => document.getElementById(id);
+const api = async (url, opts) => {
+  const r = await fetch(url, opts);
+  if (r.status === 401 && !url.includes('login')) { showLogin(); throw new Error('auth'); }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || 'Something went wrong');
+  return j;
+};
+const post = (url, body) => api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+const fmt = n => n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : n < 1073741824 ? (n / 1048576).toFixed(1) + ' MB' : (n / 1073741824).toFixed(2) + ' GB';
+const esc = s => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const join = (a, b) => a ? a + '/' + b : b;
+
+function showLogin() { $('app').hidden = true; $('login').hidden = false; $('pw').focus(); }
+async function login() {
+  try { await post('/api/login', { password: $('pw').value }); $('pw').value = ''; $('loginErr').textContent = ''; start(); }
+  catch (e) { $('loginErr').textContent = e.message; }
+}
+async function start() { $('login').hidden = true; $('app').hidden = false; load(''); }
+
+async function load(p) {
+  try {
+    const d = await api('/api/list?path=' + encodeURIComponent(p));
+    cwd = p;
+    const parts = p ? p.split('/') : [];
+    $('crumbs').innerHTML = '<a data-p="">Home</a>' + parts.map((s, i) => ' / <a data-p="' + esc(parts.slice(0, i + 1).join('/')) + '">' + esc(s) + '</a>').join('');
+    $('crumbs').querySelectorAll('a').forEach(a => a.onclick = () => load(a.dataset.p));
+    $('drop').innerHTML = d.items.length
+      ? '<div class="row head"><span>Name</span><span class="size">Size</span><span class="date">Modified</span><span></span></div>' +
+        d.items.map(i => '<div class="row" data-n="' + esc(i.name) + '" data-d="' + i.dir + '"><span class="name">' + (i.dir ? '📁 ' : '📄 ') + esc(i.name) +
+          '</span><span class="size">' + (i.dir ? '' : fmt(i.size)) + '</span><span class="date">' + new Date(i.modified).toLocaleString() +
+          '</span><span class="acts">' + (i.dir ? '' : '<button data-a="dl">Download</button>') + '<button data-a="rn">Rename</button><button data-a="del" class="danger">Delete</button></span></div>').join('')
+      : '<div class="empty">This folder is empty. Drop files here or press Upload files.</div>';
+    $('status').textContent = d.items.length + ' items, ' + fmt(d.total) + ' of files here';
+  } catch (e) { if (e.message !== 'auth') $('status').textContent = e.message; }
+}
+
+$('drop').onclick = async e => {
+  const row = e.target.closest('.row[data-n]'); if (!row) return;
+  const n = row.dataset.n, p = join(cwd, n), a = e.target.dataset.a;
+  try {
+    if (e.target.closest('.name') && row.dataset.d === 'true') return load(p);
+    if (e.target.closest('.name')) return location.href = '/api/download?path=' + encodeURIComponent(p);
+    if (a === 'dl') location.href = '/api/download?path=' + encodeURIComponent(p);
+    if (a === 'rn') { const nn = prompt('New name', n); if (nn && nn !== n) { await post('/api/rename', { path: p, name: nn }); load(cwd); } }
+    if (a === 'del' && confirm('Delete "' + n + '"? This cannot be undone.')) { await post('/api/delete', { path: p }); load(cwd); }
+  } catch (err) { $('status').textContent = err.message; }
+};
+
+function send(files) {
+  if (!files.length) return;
+  const fd = new FormData(); [...files].forEach(f => fd.append('files', f));
+  const x = new XMLHttpRequest();
+  x.open('POST', '/api/upload?path=' + encodeURIComponent(cwd));
+  $('prog').hidden = false; $('prog').value = 0;
+  x.upload.onprogress = e => { if (e.lengthComputable) $('prog').value = e.loaded / e.total * 100; };
+  x.onload = () => { $('prog').hidden = true; x.status === 200 ? load(cwd) : $('status').textContent = 'Upload failed'; };
+  x.onerror = () => { $('prog').hidden = true; $('status').textContent = 'Upload failed. Check your connection.'; };
+  x.send(fd);
+}
+$('uploadBtn').onclick = () => $('fileInput').click();
+$('fileInput').onchange = e => { send(e.target.files); e.target.value = ''; };
+$('drop').ondragover = e => { e.preventDefault(); $('drop').classList.add('over'); };
+$('drop').ondragleave = () => $('drop').classList.remove('over');
+$('drop').ondrop = e => { e.preventDefault(); $('drop').classList.remove('over'); send(e.dataTransfer.files); };
+$('mkdirBtn').onclick = async () => { const n = prompt('Folder name'); if (n) { try { await post('/api/mkdir', { path: cwd, name: n }); load(cwd); } catch (e) { $('status').textContent = e.message; } } };
+$('logout').onclick = async () => { await post('/api/logout', {}); showLogin(); };
+$('loginBtn').onclick = login;
+$('pw').onkeydown = e => { if (e.key === 'Enter') login(); };
+
+api('/api/me').then(start).catch(showLogin);
+</script>
+</body>
+</html>
